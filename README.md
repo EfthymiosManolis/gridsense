@@ -11,7 +11,7 @@
 1. Κλωνοποίηση του repository:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/EfthymiosManolis/gridsense.git 
 cd gridsense
 ```
 
