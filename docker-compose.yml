@@ -17,6 +17,8 @@ services:
     depends_on:
       timeseries-db:
         condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
       graph-db:
         condition: service_healthy
       catalog-db:
@@ -47,6 +49,18 @@ services:
        interval: 30s
        timeout: 10s
        retries: 10
+
+  cassandra-init:
+    image: cassandra:4.1
+    depends_on:
+      timeseries-db:
+        condition: service_healthy
+    volumes:
+      - ./cql/init.cql:/init.cql:ro
+    networks:
+      - gridsense_net
+    command: ["cqlsh", "timeseries-db", "9042", "-f", "/init.cql"]
+    restart: "no"
 
   graph-db:
      image: neo4j:5-community

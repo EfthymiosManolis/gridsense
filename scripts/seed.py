@@ -5,7 +5,10 @@ import asyncio
 import asyncpg
 from neo4j import GraphDatabase
 from pathlib import Path
+from dotenv import dotenv_values
 import os
+
+ENV = dotenv_values(Path(__file__).resolve().parents[1] / ".env")
 
 MONGO_URI = os.getenv("MONGO_URI","mongodb://127.0.0.1:27017/gridsense")
 
@@ -197,7 +200,7 @@ def seed_cassandra():
 
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "neo4jpassword")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD") or ENV.get("NEO4J_PASSWORD") or "neo4jpassword"
 
 
 def seed_neo4j():
@@ -235,9 +238,9 @@ def seed_neo4j():
 
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "127.0.0.1")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
-POSTGRES_USER = os.getenv("POSTGRES_USER", "gridsense")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgrespassword")
-POSTGRES_DB = os.getenv("POSTGRES_DB", "gridsense")
+POSTGRES_USER = os.getenv("POSTGRES_USER") or ENV.get("POSTGRES_USER") or "gridsense"
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD") or ENV.get("POSTGRES_PASSWORD") or "postgrespassword"
+POSTGRES_DB = os.getenv("POSTGRES_DB") or ENV.get("POSTGRES_DB") or "gridsense"
 
 
 async def seed_postgres():

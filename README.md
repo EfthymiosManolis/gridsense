@@ -33,13 +33,21 @@ docker compose up --build -d
 docker compose ps
 ```
 
-5. Δημιουργία των seed δεδομένων:
+5. Δημιουργία και ενεργοποίηση Python virtual environment:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r scripts/requirements.txt
+```
+
+6. Δημιουργία των seed δεδομένων:
 
 ```bash
 python scripts/seed.py
 ```
 
-6. Έλεγχος του API:
+7. Έλεγχος του API:
 
 ```bash
 curl http://localhost:8000/health

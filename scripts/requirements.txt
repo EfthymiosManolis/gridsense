@@ -1,0 +1,6 @@
+cassandra-driver
+neo4j
+pymongo
+asyncpg
+matplotlib
+python-dotenv
