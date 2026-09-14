@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+cassandra-driver
+neo4j
+motor
+asyncpg
+redis
+pydantic
+pydantic-settings
