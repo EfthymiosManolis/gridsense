@@ -99,6 +99,20 @@ curl "http://localhost:8000/equipment/TR1"
 ```bash
 curl "http://localhost:8000/billing/account/PREM001"
 ```
+## C.4 Benchmark
+
+Για το πείραμα C.4 δημιουργούνται τα ίδια 30 equipment records
+σε MongoDB και PostgreSQL:
+
+```bash
+python scripts/seed_c4.py
+
+Στη συνέχεια εκτελείται το benchmark:
+
+python scripts/benchmark_c4.py
+
+Το benchmark εκτελεί τις τρεις ζητούμενες queries και αναφέρει
+τον μέσο χρόνο εκτέλεσης από 10 runs για κάθε βάση δεδομένων.
 
 ## Τερματισμός
 

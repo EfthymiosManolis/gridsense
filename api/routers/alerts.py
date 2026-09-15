@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from api.models.alerts import AlertPublish
 from api.db.redis import get_redis
 from datetime import datetime
+import json
 
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
@@ -11,13 +12,21 @@ router = APIRouter(prefix="/alerts", tags=["Alerts"])
 async def get_active_alerts():
     redis_client = await get_redis()
 
-    alerts = await redis_client.lrange("active_alerts", 0, -1)
+    alert_strings = await redis_client.lrange(
+        "active_alerts",
+        0,
+        -1,
+    )
+
+    alerts = [
+        json.loads(alert)
+        for alert in alert_strings
+    ]
 
     return {
         "alerts": alerts,
-        "count": len(alerts)
+        "count": len(alerts),
     }
-
 
 @router.post("/publish")
 async def publish_alert(alert: AlertPublish):

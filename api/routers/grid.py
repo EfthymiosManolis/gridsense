@@ -151,14 +151,33 @@ async def restore_paths(node_id: str):
 
 @router.post("/nodes")
 async def create_node(node: GridNode):
+    allowed_node_types = {
+        "GridSupplyPoint",
+        "Substation",
+        "Transformer",
+        "SmartMeter",
+    }
+
+    if node.node_type not in allowed_node_types:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "node_type must be one of: "
+                "GridSupplyPoint, Substation, "
+                "Transformer, SmartMeter"
+            ),
+        )
+
     driver = await get_neo4j_driver()
 
-    query = """
-    CREATE (n:GridNode {
+    label = node.node_type
+
+    query = f"""
+    CREATE (n:{label} {{
         node_id: $node_id,
         node_type: $node_type,
         name: $name
-    })
+    }})
     SET n += $properties
     RETURN n
     """
@@ -169,73 +188,12 @@ async def create_node(node: GridNode):
             node_id=node.node_id,
             node_type=node.node_type,
             name=node.name,
-            properties=node.properties
+            properties=node.properties,
         )
 
         record = await result.single()
 
     return {
         "message": "Grid node created successfully",
-        "node_id": record["n"]["node_id"]
-    }
-
-
-@router.post("/relationships")
-async def create_relationship(relationship: GridRelationship):
-    relationship_type = relationship.relationship_type.upper()
-
-    allowed_relationships = {
-        "FEEDS",
-        "SUPPLIES",
-        "CONNECTS_TO"
-    }
-
-    if relationship_type not in allowed_relationships:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid relationship type"
-        )
-
-    query = f"""
-    MATCH (a)
-    WHERE a.node_id = $from_node
-       OR a.gsp_id = $from_node
-       OR a.substation_id = $from_node
-       OR a.asset_id = $from_node
-       OR a.meter_id = $from_node
-
-    MATCH (b)
-    WHERE b.node_id = $to_node
-       OR b.gsp_id = $to_node
-       OR b.substation_id = $to_node
-       OR b.asset_id = $to_node
-       OR b.meter_id = $to_node
-
-    MERGE (a)-[r:{relationship_type}]->(b)
-    SET r += $properties
-
-    RETURN type(r) AS relationship
-    """
-
-    driver = await get_neo4j_driver()
-
-    async with driver.session(database="neo4j") as session:
-        result = await session.run(
-            query,
-            from_node=relationship.from_node,
-            to_node=relationship.to_node,
-            properties=relationship.properties
-        )
-
-        record = await result.single()
-
-    if record is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Source or destination node not found"
-        )
-
-    return {
-        "message": "Grid relationship created successfully",
-        "relationship": record["relationship"]
+        "node_id": record["n"]["node_id"],
     }

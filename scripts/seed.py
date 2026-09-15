@@ -5,12 +5,27 @@ import asyncio
 import asyncpg
 from neo4j import GraphDatabase
 from pathlib import Path
-from dotenv import dotenv_values
+from dotenv import load_dotenv
 import os
 
-ENV = dotenv_values(Path(__file__).resolve().parents[1] / ".env")
 
-MONGO_URI = os.getenv("MONGO_URI","mongodb://127.0.0.1:27017/gridsense")
+load_dotenv(
+    Path(__file__).resolve().parents[1] / ".env"
+)
+
+
+def require_env(name: str) -> str:
+    value = os.getenv(name)
+
+    if not value:
+        raise RuntimeError(
+            f"Required environment variable '{name}' is not set"
+        )
+
+    return value
+
+
+MONGO_URI = require_env("SCRIPT_MONGO_URI")
 
 def seed_mongo():
     client = MongoClient(MONGO_URI)
@@ -20,57 +35,80 @@ def seed_mongo():
     equipment_records = []
 
     for i in range(1, 41):
-        if i <= 15:
+        if i <= 10:
             equipment_records.append({
                 "asset_id": f"TR{i}",
                 "equipment_type": "Transformer",
                 "name": f"Transformer {i}",
                 "status": "active",
-                "location": f"Substation {(i - 1) // 4 + 1}",
+                "location": f"Substation {(i - 1) // 2 + 1}",
                 "specifications": {
                     "capacity_kva": 500 + ((i % 6) * 100),
-                    "voltage": "110/20 kV"
-                }
+                    "voltage": "110/20 kV",
+                },
+            })
+
+        elif i <= 20:
+            number = i - 10
+
+            equipment_records.append({
+                "asset_id": f"SW{number}",
+                "equipment_type": "Switch",
+                "name": f"Switch {number}",
+                "status": "active",
+                "location": f"Substation {((number - 1) % 10) + 1}",
+                "specifications": {
+                    "switch_type": "breaker",
+                    "rated_current": 630,
+                },
             })
 
         elif i <= 30:
+            number = i - 20
+
             equipment_records.append({
-                "asset_id": f"SW{i - 15}",
-                "equipment_type": "Switch",
-                "name": f"Switch {(i - 15)}",
+                "asset_id": f"SEN{number}",
+                "equipment_type": "Sensor",
+                "name": f"Grid Sensor {number}",
                 "status": "active",
-                "location": f"Substation {((i - 16) % 10) + 1}",
                 "specifications": {
-                    "switch_type": "breaker",
-                    "rated_current": 630
-                }
+                    "measurement": [
+                        "voltage",
+                        "current",
+                        "power",
+                    ],
+                },
             })
 
         else:
+            number = i - 30
+
             equipment_records.append({
-                "asset_id": f"SEN{i - 30}",
-                "equipment_type": "Sensor",
-                "name": f"Grid Sensor {i - 30}",
+                "asset_id": f"REL{number}",
+                "equipment_type": "Relay",
+                "name": f"Protection Relay {number}",
                 "status": "active",
-                "specifications": {
-                    "measurement": ["voltage", "current", "power"]
-                }
+                "location": f"Feeder {((number - 1) % 5) + 1}",
+                "protection_settings": {
+                    "trip_current_a": 800 + (number * 10),
+                    "curve": "inverse",
+                    "auto_reclose": True,
+                },
             })
 
-    for record in equipment_records:
-        collection.update_one(
-            {"asset_id": record["asset_id"]},
-            {"$set": record},
-            upsert=True
-        )
+    collection.delete_many({})
+
+    collection.insert_many(equipment_records)
 
     client.close()
 
-    print(f"MongoDB seed completed: {len(equipment_records)} equipment records.")
+    print(
+        f"MongoDB seed completed: "
+        f"{len(equipment_records)} equipment records."
+    )
 
-CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "127.0.0.1")
-CASSANDRA_PORT = int(os.getenv("CASSANDRA_PORT", "9042"))
-
+CASSANDRA_HOST = require_env("SCRIPT_CASSANDRA_HOST")
+CASSANDRA_PORT = int(require_env("SCRIPT_CASSANDRA_PORT"))
 
 def seed_cassandra():
     cluster = Cluster([CASSANDRA_HOST], port=CASSANDRA_PORT)
@@ -196,11 +234,9 @@ def seed_cassandra():
         f"{total_readings:,} sensor readings inserted."
     )
 
-
-
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD") or ENV.get("NEO4J_PASSWORD") or "neo4jpassword"
+NEO4J_URI = require_env("SCRIPT_NEO4J_URI")
+NEO4J_USER = require_env("NEO4J_USER")
+NEO4J_PASSWORD = require_env("NEO4J_PASSWORD")
 
 
 def seed_neo4j():
@@ -236,12 +272,11 @@ def seed_neo4j():
         f"{len(statements)} Cypher statements executed."
     )
 
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "127.0.0.1")
-POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
-POSTGRES_USER = os.getenv("POSTGRES_USER") or ENV.get("POSTGRES_USER") or "gridsense"
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD") or ENV.get("POSTGRES_PASSWORD") or "postgrespassword"
-POSTGRES_DB = os.getenv("POSTGRES_DB") or ENV.get("POSTGRES_DB") or "gridsense"
-
+POSTGRES_HOST = require_env("SCRIPT_POSTGRES_HOST")
+POSTGRES_PORT = int(require_env("SCRIPT_POSTGRES_PORT"))
+POSTGRES_USER = require_env("POSTGRES_USER")
+POSTGRES_PASSWORD = require_env("POSTGRES_PASSWORD")
+POSTGRES_DB = require_env("POSTGRES_DB")
 
 async def seed_postgres():
     connection = await asyncpg.connect(

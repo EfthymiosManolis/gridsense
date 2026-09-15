@@ -4,19 +4,29 @@ import math
 import statistics
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
-
+from pathlib import Path
+from dotenv import load_dotenv
 from cassandra import ConsistencyLevel
 from cassandra.cluster import Cluster
 
+load_dotenv(
+    Path(__file__).resolve().parents[1] / ".env"
+)
 
-CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "127.0.0.1")
-CASSANDRA_PORT = int(os.getenv("CASSANDRA_PORT", "9042"))
+CASSANDRA_HOST = os.environ[
+    "SCRIPT_CASSANDRA_HOST"
+]
+
+CASSANDRA_PORT = int(
+    os.environ["SCRIPT_CASSANDRA_PORT"]
+)
+
 KEYSPACE = "gridsense"
 
 CONCURRENCY = 32
 WARMUP_SECONDS = 5
 MEASUREMENT_SECONDS = 15
-
+TRIALS = 5
 
 def create_cassandra_connection():
     cluster = Cluster(
@@ -186,8 +196,12 @@ def benchmark_consistency_level(
     insert_statement,
     consistency_level,
     level_name,
+    trial_number,
 ):
-    print(f"\n=== {level_name} ===")
+    print(f"\n=== {level_name}"
+          f"Trial {trial_number}/{TRIALS}  ==="
+    )
+
     print(
         f"Warm-up: {WARMUP_SECONDS} seconds "
         f"with concurrency {CONCURRENCY}"
@@ -199,7 +213,7 @@ def benchmark_consistency_level(
         insert_statement,
         consistency_level,
         level_name,
-        "WARMUP",
+        f"WARMUP_T{trial_number}",
         WARMUP_SECONDS,
         False,
     )
@@ -220,7 +234,7 @@ def benchmark_consistency_level(
         insert_statement,
         consistency_level,
         level_name,
-        "MEASURE",
+        f"MEASURE_T{trial_number}",
         MEASUREMENT_SECONDS,
         True,
     )
@@ -243,6 +257,7 @@ def benchmark_consistency_level(
 
     return {
         "consistency": level_name,
+        "trial": trial_number,
         "successful_writes": successful_writes,
         "events_per_second": events_per_second,
         "p50_ms": p50_ms,
@@ -269,33 +284,35 @@ def main():
 
     try:
         for level_name, consistency_level in consistency_levels:
-            with ThreadPoolExecutor(
-                max_workers=CONCURRENCY
-            ) as executor:
-                result = benchmark_consistency_level(
-                    executor,
-                    session,
-                    insert_statement,
-                    consistency_level,
-                    level_name,
-                )
+            for trial_number in range(1, TRIALS + 1):
+                with ThreadPoolExecutor(
+                   max_workers=CONCURRENCY
+                ) as executor:
+                   result = benchmark_consistency_level(
+                       executor,
+                       session,
+                       insert_statement,
+                       consistency_level,
+                       level_name,
+                       trial_number,
+                   )
 
-                results.append(result)
+                   results.append(result)
 
     finally:
         cluster.shutdown()
-
-    print("\n=== C.1 Cassandra Benchmark Results ===")
+    print("\n=== C.1 Individual Trial Results ===")
 
     print(
         f"{'Consistency':<16}"
+        f"{'Trial':>7}"
         f"{'Events/sec':>14}"
         f"{'p50 ms':>12}"
         f"{'p95 ms':>12}"
         f"{'Errors':>10}"
     )
 
-    print("-" * 64)
+    print("-" * 71)
 
     for result in results:
         if result["p50_ms"] is None:
@@ -310,10 +327,74 @@ def main():
 
         print(
             f"{result['consistency']:<16}"
+            f"{result['trial']:>7}"
             f"{result['events_per_second']:>14.2f}"
             f"{p50_text:>12}"
             f"{p95_text:>12}"
             f"{result['errors']:>10}"
+        )
+
+    print("\n=== C.1 Aggregate Results ===")
+
+    print(
+        f"{'Consistency':<16}"
+        f"{'Mean ev/s':>14}"
+        f"{'Std ev/s':>12}"
+        f"{'Mean p50':>12}"
+        f"{'Mean p95':>12}"
+        f"{'Errors':>10}"
+    )
+
+    print("-" * 76)
+
+    for level_name, _ in consistency_levels:
+        level_results = [
+            result
+            for result in results
+            if result["consistency"] == level_name
+        ]
+
+        throughputs = [
+            result["events_per_second"]
+            for result in level_results
+        ]
+
+        p50_values = [
+            result["p50_ms"]
+            for result in level_results
+            if result["p50_ms"] is not None
+        ]
+
+        p95_values = [
+            result["p95_ms"]
+            for result in level_results
+            if result["p95_ms"] is not None
+        ]
+
+        mean_throughput = statistics.mean(throughputs)
+
+        if len(throughputs) > 1:
+            std_throughput = statistics.stdev(
+                throughputs
+            )
+        else:
+            std_throughput = 0.0
+
+        mean_p50 = statistics.mean(p50_values)
+        mean_p95 = statistics.mean(p95_values)
+
+        total_errors = sum(
+            result["errors"]
+            for result in level_results
+        )
+
+        print(
+            f"{level_name:<16}"
+            f"{mean_throughput:>14.2f}"
+            f"{std_throughput:>12.2f}"
+            f"{mean_p50:>12.3f}"
+            f"{mean_p95:>12.3f}"
+            f"{total_errors:>10}"
         )
 
 

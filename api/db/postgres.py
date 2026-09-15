@@ -10,13 +10,13 @@ async def init_postgres_pool():
 
     if pool is None:
         pool = await asyncpg.create_pool(
-            host=os.getenv("POSTGRES_HOST", "billing-db"),
-            port=int(os.getenv("POSTGRES_PORT", "5432")),
-            user=os.getenv("POSTGRES_USER", "gridsense"),
-            password=os.getenv("POSTGRES_PASSWORD"),
-            database=os.getenv("POSTGRES_DB", "gridsense"),
-            min_size=1,
-            max_size=10,
+             host=os.environ["POSTGRES_HOST"],
+             port=int(os.environ["POSTGRES_PORT"]),
+             user=os.environ["POSTGRES_USER"],
+             password=os.environ["POSTGRES_PASSWORD"],
+             database=os.environ["POSTGRES_DB"],
+             min_size=1,
+             max_size=10,
         )
 
     return pool

@@ -3,14 +3,17 @@ import os
 
 
 client = AsyncIOMotorClient(
-    os.getenv("MONGO_URI", "mongodb://catalog-db:27017")
+    os.environ["MONGO_URI"]
 )
 
-database = client[os.getenv("MONGO_DB", "gridsense")]
+database = client[
+    os.environ["MONGO_DB"]
+]
 
 
 def get_mongo_database():
     return database
+
 
 def close_mongo_client():
     client.close()

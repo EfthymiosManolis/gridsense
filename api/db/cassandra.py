@@ -12,8 +12,8 @@ def init_cassandra():
 
     if cluster is None:
         cluster = Cluster(
-            [os.getenv("CASSANDRA_HOST", "timeseries-db")],
-            port=int(os.getenv("CASSANDRA_PORT", "9042")),
+            [os.environ["CASSANDRA_HOST"]],
+            port=int(os.environ["CASSANDRA_PORT"]),
         )
 
         session = cluster.connect("gridsense")

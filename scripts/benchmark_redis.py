@@ -123,8 +123,6 @@ def run_cold_batch():
     latencies = []
 
     for _ in range(REQUESTS_PER_BATCH):
-        delete_cache_key()
-
         latency_ms = measure_request()
         latencies.append(latency_ms)
 

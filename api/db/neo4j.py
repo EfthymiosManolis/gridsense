@@ -3,11 +3,11 @@ import os
 
 
 driver = AsyncGraphDatabase.driver(
-    os.getenv("NEO4J_URI", "bolt://graph-db:7687"),
+    os.environ["NEO4J_URI"],
     auth=(
-        "neo4j",
-        os.getenv("NEO4J_PASSWORD")
-    )
+        os.environ["NEO4J_USER"],
+        os.environ["NEO4J_PASSWORD"],
+    ),
 )
 
 

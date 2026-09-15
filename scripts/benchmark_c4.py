@@ -2,40 +2,50 @@ import os
 import time
 import asyncio
 import statistics
+from pathlib import Path
 
 import asyncpg
 from pymongo import MongoClient
+from dotenv import load_dotenv
 
 
-MONGO_URI = os.getenv(
-    "MONGO_URI",
-    "mongodb://127.0.0.1:27017/gridsense",
+load_dotenv(
+    Path(__file__).resolve().parents[1] / ".env"
 )
 
-POSTGRES_HOST = os.getenv(
-    "POSTGRES_HOST",
-    "127.0.0.1",
+
+def require_env(name: str) -> str:
+    value = os.getenv(name)
+
+    if not value:
+        raise RuntimeError(
+            f"Required environment variable '{name}' is not set"
+        )
+
+    return value
+
+
+MONGO_URI = require_env("SCRIPT_MONGO_URI")
+
+POSTGRES_HOST = require_env(
+    "SCRIPT_POSTGRES_HOST"
 )
 
 POSTGRES_PORT = int(
-    os.getenv("POSTGRES_PORT", "5432")
+    require_env("SCRIPT_POSTGRES_PORT")
 )
 
-POSTGRES_USER = os.getenv(
-    "POSTGRES_USER",
-    "gridsense",
+POSTGRES_USER = require_env(
+    "POSTGRES_USER"
 )
 
-POSTGRES_PASSWORD = os.getenv(
-    "POSTGRES_PASSWORD",
-    "postgrespassword",
+POSTGRES_PASSWORD = require_env(
+    "POSTGRES_PASSWORD"
 )
 
-POSTGRES_DB = os.getenv(
-    "POSTGRES_DB",
-    "gridsense",
+POSTGRES_DB = require_env(
+    "POSTGRES_DB"
 )
-
 MONGO_COLLECTION = "equipment_c4"
 POSTGRES_TABLE = "equipment_c4"
 
