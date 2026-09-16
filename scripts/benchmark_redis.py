@@ -261,6 +261,59 @@ def main():
             f"{result['hit_rate']:>11.2f}%"
         )
 
+def run_controlled_comparison():
+    samples = 30
+
+    print("\n=== C.3 Supplemental Hit-vs-Miss Test ===")
+    print(f"Samples per condition: {samples}")
+
+    # Controlled cache hits
+    delete_cache_key()
+    measure_request()  # populate cache
+
+    hit_latencies = []
+
+    for _ in range(samples):
+        hit_latencies.append(measure_request())
+
+    # Controlled cache misses
+    miss_latencies = []
+
+    for _ in range(samples):
+        delete_cache_key()
+        miss_latencies.append(measure_request())
+
+    hit_median = statistics.median(hit_latencies)
+    miss_median = statistics.median(miss_latencies)
+
+    incremental_miss_ms = miss_median - hit_median
+
+    baseline_fraction = (
+        hit_median / miss_median * 100.0
+        if miss_median > 0
+        else 0.0
+    )
+
+    incremental_fraction = (
+        incremental_miss_ms / miss_median * 100.0
+        if miss_median > 0
+        else 0.0
+    )
+
+    print(f"Hit median: {hit_median:.3f} ms")
+    print(f"Miss median: {miss_median:.3f} ms")
+    print(
+        f"Incremental miss cost: "
+        f"{incremental_miss_ms:.3f} ms"
+    )
+    print(
+        f"Baseline HTTP/API/cache-hit fraction: "
+        f"{baseline_fraction:.2f}%"
+    )
+    print(
+        f"Incremental miss-path fraction: "
+        f"{incremental_fraction:.2f}%"
+    )
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-
+from api.observability import metrics_middleware, get_metrics
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 
@@ -50,6 +50,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.middleware("http")(metrics_middleware)
+
     app.include_router(sensors.router)
     app.include_router(grid.router)
     app.include_router(equipment.router)
@@ -63,6 +65,10 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         return {"status": "ok"}
+
+    @app.get("/metrics")
+    async def metrics():
+        return get_metrics()
 
     return app
 

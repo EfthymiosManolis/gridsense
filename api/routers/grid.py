@@ -197,3 +197,73 @@ async def create_node(node: GridNode):
         "message": "Grid node created successfully",
         "node_id": record["n"]["node_id"],
     }
+
+@router.post("/relationships")
+async def create_relationship(relationship: GridRelationship):
+    allowed_relationship_types = {
+        "FEEDS",
+        "SUPPLIES",
+        "CONNECTS_TO",
+    }
+
+    if relationship.relationship_type not in allowed_relationship_types:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "relationship_type must be one of: "
+                "FEEDS, SUPPLIES, CONNECTS_TO"
+            ),
+        )
+
+    driver = await get_neo4j_driver()
+
+    relationship_type = relationship.relationship_type
+
+    query = f"""
+    MATCH (source), (target)
+    WHERE (
+        source.node_id = $from_node
+        OR source.gsp_id = $from_node
+        OR source.substation_id = $from_node
+        OR source.asset_id = $from_node
+        OR source.meter_id = $from_node
+    )
+    AND (
+        target.node_id = $to_node
+        OR target.gsp_id = $to_node
+        OR target.substation_id = $to_node
+        OR target.asset_id = $to_node
+        OR target.meter_id = $to_node
+    )
+
+    CREATE (source)-[r:{relationship_type}]->(target)
+    SET r += $properties
+
+    RETURN
+        type(r) AS relationship_type,
+        $from_node AS from_node,
+        $to_node AS to_node
+    """
+
+    async with driver.session(database="neo4j") as session:
+        result = await session.run(
+            query,
+            from_node=relationship.from_node,
+            to_node=relationship.to_node,
+            properties=relationship.properties,
+        )
+
+        record = await result.single()
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Source or target node not found",
+        )
+
+    return {
+        "message": "Grid relationship created successfully",
+        "from_node": record["from_node"],
+        "to_node": record["to_node"],
+        "relationship_type": record["relationship_type"],
+    }
