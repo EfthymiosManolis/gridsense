@@ -10,18 +10,17 @@
 
 - Docker
 - Docker Compose
-- Python 3.11+
 - Git
+
+Για τα προαιρετικά host-side scripts απαιτείται επιπλέον Python 3.11+.
 
 ## Ρύθμιση Περιβάλλοντος
 
-Όλα τα passwords και connection parameters παρέχονται μέσω αρχείου `.env`.
-
-Δημιούργησε το `.env` από το παρεχόμενο example:
-
-```bash
-cp .env.example .env
-```
+Δεν απαιτείται αρχείο `.env` για την εκκίνηση. Το Docker Compose δημιουργεί
+αυτόματα τυχαίους κωδικούς για Neo4j και PostgreSQL στο τοπικό volume
+`secrets_data` κατά την πρώτη εκκίνηση. Οι κωδικοί διατηρούνται στις επόμενες
+εκκινήσεις και δεν αποθηκεύονται στο Git. Το `.env.example` αφορά μόνο τα
+προαιρετικά scripts που εκτελούνται από το host.
 
 ## Εκκίνηση
 
@@ -30,12 +29,6 @@ cp .env.example .env
 ```bash
 git clone https://github.com/EfthymiosManolis/gridsense.git
 cd gridsense
-```
-
-Δημιούργησε το `.env`:
-
-```bash
-cp .env.example .env
 ```
 
 Εκκίνησε ολόκληρο το σύστημα:
@@ -78,14 +71,44 @@ curl http://localhost:8000/health
 
 | Service | Technology | Port | Purpose |
 |---|---|---:|---|
+| `secrets-init` | Alpine | — | Δημιουργεί και διατηρεί τοπικούς κωδικούς κατά την πρώτη εκκίνηση |
+| `seed` | Python 3.11 | — | Γεμίζει αυτόματα τις άδειες βάσεις με δοκιμαστικά δεδομένα πριν ξεκινήσει το API |
 | `api` | FastAPI / Python 3.11 | 8000 | REST API gateway και business logic |
-| `timeseries-db` | Cassandra 4.1 | 9042 | Αποθήκευση sensor readings και relay events |
+| `timeseries-db` | Cassandra 4.1 | 9042 | `sensor_readings`, `relay_events` και ημερήσια sharded `regional_readings` |
 | `graph-db` | Neo4j 5 Community | 7474 / 7687 | Τοπολογία ηλεκτρικού δικτύου και graph traversals |
 | `catalog-db` | MongoDB 7 | 27017 | Flexible equipment metadata |
 | `billing-db` | PostgreSQL 15 | 5432 | Consumer accounts και billing records |
-| `cache` | Redis 7 Alpine | 6379 | Dashboard cache και Pub/Sub fault alerts |
+| `cache` | Redis 7 Alpine | 6379 | Dashboard cache, Redis Stream για fault updates και Pub/Sub ειδοποιήσεις |
 
 ## Seed Data
+
+Το `sensor_readings` έχει partition key `(sensor_id, date_bucket)` και το
+`regional_readings` έχει `(region_id, date_bucket, shard)`. Και στις δύο
+περιπτώσεις το `date_bucket` είναι ημερομηνία UTC. Ο τρίτος πίνακας είναι το
+`relay_events`. Κάθε νέα μέτρηση API χρειάζεται `region_id`.
+
+Σε καθαρή εγκατάσταση οι τρεις πίνακες δημιουργούνται αυτόματα από το
+`cql/init.cql`. Η υπηρεσία `seed` εκτελεί το `seed.py` πριν ξεκινήσει το API,
+οπότε το `docker compose up --build` παρέχει και τα δοκιμαστικά δεδομένα.
+Αν υπάρχουν ήδη sensor readings, το αυτόματο seed παραλείπεται για να
+διατηρηθούν τα υπάρχοντα δεδομένα. Η χειροκίνητη εκτέλεση του `seed.py`
+καθαρίζει τους πίνακες συνθετικών sensor/regional δεδομένων πριν τους
+ξαναγεμίσει· μην την κάνεις πάνω σε δεδομένα που θέλεις να διατηρήσεις.
+
+Ένα παλιό persistent Cassandra volume κρατά το προηγούμενο schema και δεν
+αναβαθμίζεται αυτόματα από το `CREATE TABLE IF NOT EXISTS`.
+
+Για τα προαιρετικά utility scripts που εκτελούνται από το host, δημιούργησε
+`.env` από το `.env.example` και βάλε τους κωδικούς της τρέχουσας εγκατάστασης.
+Μπορείς να τους διαβάσεις με:
+
+```bash
+docker compose exec -T graph-db cat /secrets/neo4j_password
+docker compose exec -T billing-db cat /secrets/postgres_password
+```
+
+Το `.env` αγνοείται από το Git. Οι τιμές `change_me_*` στο `.env.example`
+είναι placeholders και δεν είναι οι κωδικοί της εγκατάστασης.
 
 Για την εκτέλεση των utility scripts δημιούργησε Python virtual environment:
 
@@ -95,7 +118,7 @@ source venv/bin/activate
 pip install -r scripts/requirements.txt
 ```
 
-Η δημιουργία όλων των seed δεδομένων γίνεται με μία εντολή:
+Για προαιρετική χειροκίνητη επαναδημιουργία των seed δεδομένων χρησιμοποίησε:
 
 ```bash
 python scripts/seed.py
@@ -129,6 +152,21 @@ curl "http://localhost:8000/sensors/SENSOR01/readings?limit=10"
 ```bash
 curl "http://localhost:8000/sensors/SENSOR01/summary"
 ```
+
+### Network Recent Readings
+
+Το endpoint επιστρέφει έως 200 εγγραφές ανά σελίδα από το τελευταίο λεπτό.
+Χρησιμοποίησε την ίδια τιμή `as_of` για διαδοχικές σελίδες:
+
+```bash
+curl "http://localhost:8000/sensors/network/recent?limit=100&offset=0"
+```
+
+Η απάντηση περιλαμβάνει `as_of`, `has_more` και `readings`. Το μέγιστο offset
+είναι 1.000, ώστε ένα αίτημα dashboard να μη διαβάζει απεριόριστα δεδομένα.
+Οι διαθέσιμες περιοχές καταγράφονται στο Redis κατά την εισαγωγή μετρήσεων.
+Για μία περιοχή διατίθεται και το
+`GET /sensors/regions/{region_id}/recent`.
 
 ### Fault Impact
 
@@ -199,6 +237,13 @@ python scripts/benchmark_c4.py
 Τα αποτελέσματα και η ανάλυση των πειραμάτων παρουσιάζονται στο γραπτό report.
 
 ## Observability
+
+Κάθε fault alert γράφεται πρώτα στο Redis Stream `fault_alert_events`.
+Ένας worker ενημερώνει τον αντίστοιχο κόμβο Neo4j και επιβεβαιώνει το event
+μόνο μετά την επιτυχή ενημέρωση. Σε προσωρινή αποτυχία Neo4j το event μένει
+σε εκκρεμότητα για επανάληψη. Το Pub/Sub εξυπηρετεί μόνο τη ζωντανή
+ειδοποίηση. Άγνωστα node IDs μεταφέρονται στο `fault_alerts_dead_letter`.
+Η δοκιμαστική εγκατάσταση έχει έναν Neo4j κόμβο και δεν δοκιμάζει εκλογή leader.
 
 Το API καταγράφει ανά endpoint:
 

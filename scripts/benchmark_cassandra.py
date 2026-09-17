@@ -40,13 +40,14 @@ def create_cassandra_connection():
         INSERT INTO sensor_readings
         (
             sensor_id,
+            date_bucket,
             reading_time,
             metric_type,
             value,
             unit,
             quality_flag
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """)
 
     return cluster, session, insert_statement
@@ -62,6 +63,7 @@ def execute_write(
     bound_statement = insert_statement.bind(
         (
             sensor_id,
+            reading_time.date(),
             reading_time,
             "voltage",
             float(value),

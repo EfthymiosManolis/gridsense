@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 BASE_URL = "http://127.0.0.1:8000"
 NODE_ID = "GSP001"
 
-DEPTHS = range(1, 7)
+DEPTHS = range(1, 9)
 ITERATIONS_PER_DEPTH = 30
 WARMUP_ITERATIONS = 5
 

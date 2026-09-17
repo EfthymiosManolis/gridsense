@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from api.models.alerts import AlertPublish
 from api.db.redis import get_redis
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 
@@ -36,22 +36,18 @@ async def publish_alert(alert: AlertPublish):
         "severity": alert.severity,
         "message": alert.message,
         "node_id": alert.node_id,
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat()
     }
-
-    import json
 
     message_json = json.dumps(message)
 
-    await redis_client.publish(
-        "grid_alerts",
-        message_json
-    )
-
-    await redis_client.lpush(
-        "active_alerts",
-        message_json
-    )
+    async with redis_client.pipeline(transaction=True) as pipe:
+        pipe.xadd("fault_alert_events", {"payload": message_json})
+        pipe.lpush("active_alerts", message_json)
+        pipe.ltrim("active_alerts", 0, 999)
+        pipe.publish("grid_alerts", message_json)
+        event_id = (await pipe.execute())[0]
+    message["event_id"] = event_id
 
     return {
         "message": "Alert published successfully",

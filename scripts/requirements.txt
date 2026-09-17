@@ -4,3 +4,4 @@ pymongo
 asyncpg
 matplotlib
 python-dotenv
+redis

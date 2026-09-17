@@ -7,6 +7,8 @@ from neo4j import GraphDatabase
 from pathlib import Path
 from dotenv import load_dotenv
 import os
+import zlib
+from redis import Redis
 
 
 load_dotenv(
@@ -117,28 +119,15 @@ def seed_cassandra():
     # Clear synthetic seed data so the script can be run again
     # without creating duplicate seed records.
     session.execute("TRUNCATE sensor_readings")
-    session.execute("TRUNCATE dashboard_readings")
+    session.execute("TRUNCATE regional_readings")
 
     sensor_query = """
     INSERT INTO sensor_readings
     (
         sensor_id,
+        date_bucket,
         reading_time,
-        metric_type,
-        value,
-        unit,
-        quality_flag
-    )
-    VALUES (?, ?, ?, ?, ?, ?)
-    """
-
-    dashboard_query = """
-    INSERT INTO dashboard_readings
-    (
-        bucket_minute,
-        shard,
-        reading_time,
-        sensor_id,
+        region_id,
         metric_type,
         value,
         unit,
@@ -147,8 +136,24 @@ def seed_cassandra():
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """
 
+    regional_query = """
+    INSERT INTO regional_readings
+    (
+        region_id,
+        date_bucket,
+        shard,
+        reading_time,
+        sensor_id,
+        metric_type,
+        value,
+        unit,
+        quality_flag
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
     sensor_prepared = session.prepare(sensor_query)
-    dashboard_prepared = session.prepare(dashboard_query)
+    regional_prepared = session.prepare(regional_query)
 
     # 20 sensors * 2500 readings = 50,000 readings
     start_time = datetime.now(timezone.utc) - timedelta(minutes=2499)
@@ -164,9 +169,9 @@ def seed_cassandra():
 
     for sensor_number in range(1, 21):
         sensor_id = f"SENSOR{sensor_number:02d}"
+        region_id = f"REGION{((sensor_number - 1) % 4) + 1:02d}"
 
-        # Spread dashboard writes across 16 partitions per minute
-        shard = (sensor_number - 1) % 16
+        shard = zlib.crc32(sensor_id.encode("utf-8")) % 16
 
         for reading_number in range(2500):
             reading_time = start_time + timedelta(minutes=reading_number)
@@ -198,7 +203,9 @@ def seed_cassandra():
                 sensor_prepared,
                 (
                     sensor_id,
+                    reading_time.date(),
                     reading_time,
+                    region_id,
                     metric_type,
                     value,
                     unit,
@@ -206,15 +213,11 @@ def seed_cassandra():
                 ),
             )
 
-            bucket_minute = reading_time.replace(
-                second=0,
-                microsecond=0
-            )
-
             session.execute(
-                dashboard_prepared,
+                regional_prepared,
                 (
-                    bucket_minute,
+                    region_id,
+                    reading_time.date(),
                     shard,
                     reading_time,
                     sensor_id,
@@ -228,6 +231,13 @@ def seed_cassandra():
             total_readings += 1
 
     cluster.shutdown()
+    redis_client = Redis(
+        host=require_env("SCRIPT_REDIS_HOST"),
+        port=int(require_env("SCRIPT_REDIS_PORT")),
+        decode_responses=True,
+    )
+    redis_client.sadd("sensor_regions", "REGION01", "REGION02", "REGION03", "REGION04")
+    redis_client.close()
 
     print(
         f"Cassandra seed completed: "
@@ -360,7 +370,22 @@ async def seed_postgres():
     print("PostgreSQL seed completed: 100 consumer accounts with sample invoices.")
 
 
+def sensor_data_exists() -> bool:
+    cluster = Cluster([CASSANDRA_HOST], port=CASSANDRA_PORT)
+    try:
+        session = cluster.connect("gridsense")
+        return session.execute(
+            "SELECT sensor_id FROM sensor_readings LIMIT 1"
+        ).one() is not None
+    finally:
+        cluster.shutdown()
+
+
 if __name__ == "__main__":
+    if os.getenv("BOOTSTRAP_ONLY") == "1" and sensor_data_exists():
+        print("Existing sensor data found; automatic seed skipped.")
+        raise SystemExit(0)
+
     seed_cassandra()
     seed_mongo()
     seed_neo4j()

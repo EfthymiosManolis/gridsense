@@ -10,16 +10,18 @@ USE gridsense;
 -- Last N readings for a specific sensor over a time window.
 CREATE TABLE IF NOT EXISTS sensor_readings (
     sensor_id text,
+    date_bucket date,
     reading_time timestamp,
+    region_id text,
     metric_type text,
     value float,
     unit text,
     quality_flag tinyint,
-    PRIMARY KEY ((sensor_id), reading_time)
-) WITH CLUSTERING ORDER BY (reading_time DESC)
+    PRIMARY KEY ((sensor_id, date_bucket), reading_time, metric_type)
+) WITH CLUSTERING ORDER BY (reading_time DESC, metric_type ASC)
   AND default_time_to_live = 7776000;
 
--- Append-only relay operation log.
+-- Relay operations ordered by event_time for forensic replay.
 CREATE TABLE IF NOT EXISTS relay_events (
     feeder_id text,
     event_time timeuuid,
@@ -30,13 +32,10 @@ CREATE TABLE IF NOT EXISTS relay_events (
     PRIMARY KEY ((feeder_id), event_time)
 ) WITH CLUSTERING ORDER BY (event_time ASC);
 
--- Pattern 2:
--- Recent readings across the whole network for the live dashboard.
---
--- Time bucketing prevents an unbounded partition.
--- Sharding prevents all network writes from hitting one partition.
-CREATE TABLE IF NOT EXISTS dashboard_readings (
-    bucket_minute timestamp,
+-- Pattern 2: recent readings by region, with daily buckets and write shards.
+CREATE TABLE IF NOT EXISTS regional_readings (
+    region_id text,
+    date_bucket date,
     shard tinyint,
     reading_time timestamp,
     sensor_id text,
@@ -44,7 +43,7 @@ CREATE TABLE IF NOT EXISTS dashboard_readings (
     value float,
     unit text,
     quality_flag tinyint,
-    PRIMARY KEY ((bucket_minute, shard), reading_time, sensor_id, metric_type)
+    PRIMARY KEY ((region_id, date_bucket, shard), reading_time, sensor_id, metric_type)
 ) WITH CLUSTERING ORDER BY (
     reading_time DESC,
     sensor_id ASC,

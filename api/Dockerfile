@@ -7,6 +7,8 @@ COPY api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY api ./api
+COPY scripts ./scripts
+COPY neo4j/import ./neo4j/import
 
 ENV PYTHONPATH=/app
 

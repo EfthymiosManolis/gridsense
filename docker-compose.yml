@@ -1,42 +1,108 @@
 services:
 
+  secrets-init:
+    image: alpine:3.20
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /secrets
+        if [ ! -s /secrets/neo4j_password ]; then
+          od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > /secrets/neo4j_password
+        fi
+        if [ ! -s /secrets/postgres_password ]; then
+          od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > /secrets/postgres_password
+        fi
+        chmod 644 /secrets/neo4j_password /secrets/postgres_password
+    volumes:
+      - secrets_data:/secrets
+    restart: "no"
+
+  seed:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        export NEO4J_PASSWORD="$$(cat /secrets/neo4j_password)"
+        export POSTGRES_PASSWORD="$$(cat /secrets/postgres_password)"
+        exec python /app/scripts/seed.py
+    environment:
+      BOOTSTRAP_ONLY: "1"
+      SCRIPT_MONGO_URI: mongodb://catalog-db:27017/gridsense
+      SCRIPT_CASSANDRA_HOST: timeseries-db
+      SCRIPT_CASSANDRA_PORT: "9042"
+      SCRIPT_REDIS_HOST: cache
+      SCRIPT_REDIS_PORT: "6379"
+      SCRIPT_NEO4J_URI: bolt://graph-db:7687
+      NEO4J_USER: neo4j
+      SCRIPT_POSTGRES_HOST: billing-db
+      SCRIPT_POSTGRES_PORT: "5432"
+      POSTGRES_USER: gridsense
+      POSTGRES_DB: gridsense
+    volumes:
+      - secrets_data:/secrets:ro
+    networks:
+      - gridsense_net
+    depends_on:
+      secrets-init:
+        condition: service_completed_successfully
+      cassandra-init:
+        condition: service_completed_successfully
+      catalog-db:
+        condition: service_healthy
+      graph-db:
+        condition: service_healthy
+      billing-db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build:
       context: .
       dockerfile: api/Dockerfile
     ports:
       - "8000:8000"
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        export NEO4J_PASSWORD="$$(cat /secrets/neo4j_password)"
+        export POSTGRES_PASSWORD="$$(cat /secrets/postgres_password)"
+        exec uvicorn api.main:app --host 0.0.0.0 --port 8000
     environment:
-
-      NEO4J_USER: ${NEO4J_USER}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
-      NEO4J_URI: ${NEO4J_URI}
-
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_HOST: ${POSTGRES_HOST}
-      POSTGRES_PORT: ${POSTGRES_PORT}
-
-      MONGO_URI: ${MONGO_URI}
-      MONGO_DB: ${MONGO_DB}
-
-      CASSANDRA_HOST: ${CASSANDRA_HOST}
-      CASSANDRA_PORT: ${CASSANDRA_PORT}
-
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
-
+      NEO4J_USER: neo4j
+      NEO4J_URI: bolt://graph-db:7687
+      POSTGRES_USER: gridsense
+      POSTGRES_DB: gridsense
+      POSTGRES_HOST: billing-db
+      POSTGRES_PORT: "5432"
+      MONGO_URI: mongodb://catalog-db:27017
+      MONGO_DB: gridsense
+      CASSANDRA_HOST: timeseries-db
+      CASSANDRA_PORT: "9042"
+      REDIS_HOST: cache
+      REDIS_PORT: "6379"
+    volumes:
+      - secrets_data:/secrets:ro
     networks:
       - gridsense_net
     depends_on:
+      seed:
+        condition: service_completed_successfully
+      secrets-init:
+        condition: service_completed_successfully
       timeseries-db:
         condition: service_healthy
       cassandra-init:
         condition: service_completed_successfully
-      graph-db:
-        condition: service_healthy
       catalog-db:
+        condition: service_healthy
+      graph-db:
         condition: service_healthy
       billing-db:
         condition: service_healthy
@@ -84,15 +150,24 @@ services:
      ports:
        - "7474:7474"
        - "7687:7687"
+     entrypoint:
+       - /bin/sh
+       - -ec
+       - |
+         export NEO4J_AUTH="neo4j/$$(cat /secrets/neo4j_password)"
+         exec /startup/docker-entrypoint.sh neo4j
      environment:
-       NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD}"
        NEO4J_PLUGINS: '["apoc"]'
        NEO4J_dbms_memory_heap_max__size: "512M"
      volumes:
        - neo4j_data:/data
+       - secrets_data:/secrets:ro
        - ./neo4j/import:/import
      networks:
        - gridsense_net
+     depends_on:
+       secrets-init:
+         condition: service_completed_successfully
      healthcheck:
        test: ["CMD", "wget", "-O", "/dev/null", "http://localhost:7474"]
 
@@ -119,16 +194,20 @@ services:
      ports:
        - "5432:5432"
      environment:
-       POSTGRES_USER: ${POSTGRES_USER}
-       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-       POSTGRES_DB: ${POSTGRES_DB}
+       POSTGRES_USER: gridsense
+       POSTGRES_PASSWORD_FILE: /secrets/postgres_password
+       POSTGRES_DB: gridsense
      volumes:
       - pg_data:/var/lib/postgresql/data
+      - secrets_data:/secrets:ro
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
      networks:
       - gridsense_net
+     depends_on:
+       secrets-init:
+         condition: service_completed_successfully
      healthcheck:
-       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+       test: ["CMD-SHELL", "pg_isready -U gridsense -d gridsense"]
        interval: 10s
        timeout: 5s
        retries: 5
@@ -136,7 +215,7 @@ services:
   cache:
     image: redis:7-alpine
     container_name: gridsense_redis
-    command: ["redis-server", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--maxmemory-policy", "allkeys-lru", "--appendonly", "yes", "--appendfsync", "everysec"]
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -151,6 +230,7 @@ services:
       retries: 5
 
 volumes:
+   secrets_data:
    cassandra_data:
    neo4j_data:
    mongo_data:

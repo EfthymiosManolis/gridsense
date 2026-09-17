@@ -1,4 +1,7 @@
 from contextlib import asynccontextmanager
+import asyncio
+from contextlib import suppress
+from api.fault_worker import prepare_fault_stream, run_fault_worker
 from api.observability import metrics_middleware, get_metrics
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
@@ -22,8 +25,9 @@ async def lifespan(app: FastAPI):
         await init_postgres_pool()
 
         # Neo4j
-        neo4j_driver = await get_neo4j_driver()
-        await neo4j_driver.verify_connectivity()
+        # The alert API must start even when Neo4j is temporarily unavailable.
+        # The stream worker retries graph updates after recovery.
+        await get_neo4j_driver()
 
         # MongoDB
         mongo_database = get_mongo_database()
@@ -33,7 +37,14 @@ async def lifespan(app: FastAPI):
         redis_client = await get_redis()
         await redis_client.ping()
 
-        yield
+        await prepare_fault_stream()
+        fault_worker = asyncio.create_task(run_fault_worker())
+        try:
+            yield
+        finally:
+            fault_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await fault_worker
 
     finally:
         await close_redis()

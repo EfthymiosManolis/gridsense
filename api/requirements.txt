@@ -7,3 +7,5 @@ asyncpg
 redis
 pydantic
 pydantic-settings
+pymongo
+python-dotenv

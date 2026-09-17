@@ -1,6 +1,6 @@
 import json
 import zlib
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
@@ -11,10 +11,23 @@ from api.models.cassandra import SensorReading
 
 
 router = APIRouter(prefix="/sensors", tags=["Sensors"])
+RETENTION_DAYS = 90
+SHARDS = 16
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _days_newest_first(start: date, end: date):
+    day = end
+    while day >= start:
+        yield day
+        day -= timedelta(days=1)
 
 
 def _dashboard_shard(sensor_id: str) -> int:
-    return zlib.crc32(sensor_id.encode("utf-8")) % 16
+    return zlib.crc32(sensor_id.encode("utf-8")) % SHARDS
 
 
 def _insert_readings(readings: list[SensorReading]):
@@ -25,24 +38,9 @@ def _insert_readings(readings: list[SensorReading]):
         INSERT INTO sensor_readings
         (
             sensor_id,
+            date_bucket,
             reading_time,
-            metric_type,
-            value,
-            unit,
-            quality_flag
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """
-    )
-
-    dashboard_query = session.prepare(
-        """
-        INSERT INTO dashboard_readings
-        (
-            bucket_minute,
-            shard,
-            reading_time,
-            sensor_id,
+            region_id,
             metric_type,
             value,
             unit,
@@ -52,12 +50,33 @@ def _insert_readings(readings: list[SensorReading]):
         """
     )
 
+    regional_query = session.prepare(
+        """
+        INSERT INTO regional_readings
+        (
+            region_id,
+            date_bucket,
+            shard,
+            reading_time,
+            sensor_id,
+            metric_type,
+            value,
+            unit,
+            quality_flag
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+    )
+
     for reading in readings:
+        reading_time = _utc(reading.reading_time)
         session.execute(
             sensor_query,
             (
                 reading.sensor_id,
-                reading.reading_time,
+                reading_time.date(),
+                reading_time,
+                reading.region_id,
                 reading.metric_type,
                 reading.value,
                 reading.unit,
@@ -65,17 +84,13 @@ def _insert_readings(readings: list[SensorReading]):
             ),
         )
 
-        bucket_minute = reading.reading_time.replace(
-            second=0,
-            microsecond=0,
-        )
-
         session.execute(
-            dashboard_query,
+            regional_query,
             (
-                bucket_minute,
+                reading.region_id,
+                reading_time.date(),
                 _dashboard_shard(reading.sensor_id),
-                reading.reading_time,
+                reading_time,
                 reading.sensor_id,
                 reading.metric_type,
                 reading.value,
@@ -103,6 +118,7 @@ async def create_readings(
 
     for sensor_id in {item.sensor_id for item in readings}:
         await redis_client.delete(f"sensor_summary:{sensor_id}")
+    await redis_client.sadd("sensor_regions", *{item.region_id for item in readings})
 
     return {
         "message": "Sensor readings created successfully",
@@ -116,49 +132,92 @@ def _fetch_readings(
     from_time: datetime | None,
 ):
     session = get_cassandra_session()
+    now = datetime.now(timezone.utc)
+    earliest = now - timedelta(days=RETENTION_DAYS)
+    start = max(_utc(from_time), earliest) if from_time else earliest
+    if start > now:
+        return []
+    query = session.prepare(
+        """SELECT sensor_id, region_id, reading_time, metric_type, value, unit, quality_flag
+        FROM sensor_readings
+        WHERE sensor_id = ? AND date_bucket = ? AND reading_time >= ?
+        LIMIT ?"""
+    )
+    result = []
+    for bucket in _days_newest_first(start.date(), now.date()):
+        rows = session.execute(query, (sensor_id, bucket, start, limit - len(result)))
+        result.extend(dict(row._asdict()) for row in rows)
+        if len(result) >= limit:
+            break
+    return result
 
-    if from_time is not None:
-        query = session.prepare(
-            f"""
-            SELECT sensor_id,
-                   reading_time,
-                   metric_type,
-                   value,
-                   unit,
-                   quality_flag
-            FROM sensor_readings
-            WHERE sensor_id = ?
-              AND reading_time >= ?
-            LIMIT {limit}
-            """
-        )
 
-        rows = session.execute(
-            query,
-            (sensor_id, from_time),
-        )
+def _fetch_network_recent(end: datetime, limit: int, offset: int, regions: list[str]):
+    session = get_cassandra_session()
+    start = end - timedelta(seconds=60)
+    fetch_size = offset + limit + 1
+    query = session.prepare(
+        """SELECT region_id, reading_time, sensor_id, metric_type, value, unit, quality_flag
+        FROM regional_readings
+        WHERE region_id = ? AND date_bucket = ? AND shard = ?
+          AND reading_time > ? AND reading_time <= ?
+        LIMIT ?"""
+    )
+    buckets = {start.date(), end.date()}
+    rows = []
+    for region_id in regions:
+        for bucket in sorted(buckets):
+            for shard in range(SHARDS):
+                rows.extend(
+                    dict(row._asdict())
+                    for row in session.execute(
+                        query, (region_id, bucket, shard, start, end, fetch_size)
+                    )
+                )
+    rows.sort(key=lambda row: (row["reading_time"], row["sensor_id"],
+                               row["metric_type"]), reverse=True)
+    page = rows[offset:offset + limit]
+    return {
+        "as_of": end,
+        "window_start": start,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(page),
+        "has_more": len(rows) > offset + limit,
+        "readings": page,
+    }
 
-    else:
-        query = session.prepare(
-            f"""
-            SELECT sensor_id,
-                   reading_time,
-                   metric_type,
-                   value,
-                   unit,
-                   quality_flag
-            FROM sensor_readings
-            WHERE sensor_id = ?
-            LIMIT {limit}
-            """
-        )
 
-        rows = session.execute(
-            query,
-            (sensor_id,),
-        )
+@router.get("/network/recent")
+async def get_network_recent(
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=1000),
+    as_of: datetime | None = None,
+):
+    """Return a bounded page from all sensors in a fixed 60-second window."""
+    end = _utc(as_of) if as_of else datetime.now(timezone.utc)
+    if end > datetime.now(timezone.utc) + timedelta(seconds=1):
+        raise HTTPException(status_code=400, detail="as_of cannot be in the future")
+    redis_client = await get_redis()
+    regions = sorted(await redis_client.smembers("sensor_regions"))
+    if not regions:
+        return {"as_of": end, "window_start": end - timedelta(seconds=60),
+                "offset": offset, "limit": limit, "returned": 0,
+                "has_more": False, "readings": []}
+    return await run_in_threadpool(_fetch_network_recent, end, limit, offset, regions)
 
-    return [dict(row._asdict()) for row in rows]
+
+@router.get("/regions/{region_id}/recent")
+async def get_region_recent(
+    region_id: str,
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=1000),
+    as_of: datetime | None = None,
+):
+    end = _utc(as_of) if as_of else datetime.now(timezone.utc)
+    if end > datetime.now(timezone.utc) + timedelta(seconds=1):
+        raise HTTPException(status_code=400, detail="as_of cannot be in the future")
+    return await run_in_threadpool(_fetch_network_recent, end, limit, offset, [region_id])
 
 
 @router.get("/{sensor_id}/readings")
@@ -176,59 +235,15 @@ async def get_readings(
 
 
 def _build_summary(sensor_id: str):
-    session = get_cassandra_session()
-
-    latest_query = session.prepare(
-        """
-        SELECT sensor_id,
-               reading_time,
-               metric_type,
-               value,
-               unit,
-               quality_flag
-        FROM sensor_readings
-        WHERE sensor_id = ?
-        LIMIT 1
-        """
-    )
-
-    latest = session.execute(
-        latest_query,
-        (sensor_id,),
-    ).one()
-
-    if latest is None:
+    latest = _fetch_readings(sensor_id, 1, None)
+    if not latest:
         return None
-
     one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
-
-    stats_query = session.prepare(
-        """
-        SELECT reading_time,
-               metric_type,
-               value,
-               unit,
-               quality_flag
-        FROM sensor_readings
-        WHERE sensor_id = ?
-          AND reading_time >= ?
-        """
-    )
-
-    rows = list(
-        session.execute(
-            stats_query,
-            (sensor_id, one_hour_ago),
-        )
-    )
-
+    rows = _fetch_readings(sensor_id, 100000, one_hour_ago)
     metrics = {}
-
     for row in rows:
-        metrics.setdefault(row.metric_type, []).append(row.value)
-
+        metrics.setdefault(row["metric_type"], []).append(row["value"])
     stats = {}
-
     for metric_type, values in metrics.items():
         stats[metric_type] = {
             "count": len(values),
@@ -239,13 +254,7 @@ def _build_summary(sensor_id: str):
 
     return {
         "sensor_id": sensor_id,
-        "latest": {
-            "reading_time": latest.reading_time,
-            "metric_type": latest.metric_type,
-            "value": latest.value,
-            "unit": latest.unit,
-            "quality_flag": latest.quality_flag,
-        },
+        "latest": latest[0],
         "last_hour": stats,
     }
 

@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 class SensorReading(BaseModel):
     sensor_id: str
+    region_id: str = Field(min_length=1)
     reading_time: datetime
     metric_type: Literal[
         "voltage",
