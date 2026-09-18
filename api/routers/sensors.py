@@ -2,7 +2,7 @@ import json
 import zlib
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from starlette.concurrency import run_in_threadpool
 
 from api.db.cassandra import get_cassandra_session
@@ -260,7 +260,10 @@ def _build_summary(sensor_id: str):
 
 
 @router.get("/{sensor_id}/summary")
-async def get_summary(sensor_id: str):
+async def get_summary(
+    sensor_id: str,
+    response: Response,
+):
     redis_client = await get_redis()
 
     cache_key = f"sensor_summary:{sensor_id}"
@@ -268,7 +271,10 @@ async def get_summary(sensor_id: str):
     cached = await redis_client.get(cache_key)
 
     if cached:
+        response.headers["X-Cache"] = "HIT"
         return json.loads(cached)
+
+    response.headers["X-Cache"] = "MISS"
 
     summary = await run_in_threadpool(
         _build_summary,

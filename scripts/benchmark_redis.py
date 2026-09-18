@@ -22,15 +22,19 @@ def measure_request():
 
     with urllib.request.urlopen(
         SUMMARY_URL,
-        timeout=10
+        timeout=10,
     ) as response:
         response.read()
+        cache_status = response.headers.get(
+            "X-Cache",
+            "UNKNOWN",
+        )
 
     latency_ms = (
         time.perf_counter() - start_time
     ) * 1000.0
 
-    return latency_ms
+    return latency_ms, cache_status
 
 def run_redis_command(*args):
     result = subprocess.run(
@@ -57,38 +61,6 @@ def delete_cache_key():
         CACHE_KEY,
     )
 
-
-def reset_redis_stats():
-    run_redis_command(
-        "CONFIG",
-        "RESETSTAT",
-    )
-
-
-def get_cache_stats():
-    output = run_redis_command(
-        "INFO",
-        "stats",
-    )
-
-    hits = 0
-    misses = 0
-
-    for line in output.splitlines():
-        line = line.strip()
-
-        if line.startswith("keyspace_hits:"):
-            hits = int(
-                line.split(":", 1)[1]
-            )
-
-        elif line.startswith("keyspace_misses:"):
-            misses = int(
-                line.split(":", 1)[1]
-            )
-
-    return hits, misses
-
 def run_warm_batch():
     print(
         f"Running warm-cache batch "
@@ -97,20 +69,23 @@ def run_warm_batch():
 
     delete_cache_key()
 
+    # Populate cache before measured batch.
     measure_request()
 
-    reset_redis_stats()
-
     latencies = []
+    hits = 0
+    misses = 0
 
     for _ in range(REQUESTS_PER_BATCH):
-        latency_ms = measure_request()
+        latency_ms, cache_status = measure_request()
         latencies.append(latency_ms)
 
-    hits, misses = get_cache_stats()
+        if cache_status == "HIT":
+            hits += 1
+        elif cache_status == "MISS":
+            misses += 1
 
     return latencies, hits, misses
-
 
 def run_cold_batch():
     print(
@@ -118,17 +93,21 @@ def run_cold_batch():
         f"({REQUESTS_PER_BATCH} requests)"
     )
 
-    reset_redis_stats()
-
     latencies = []
+    hits = 0
+    misses = 0
 
     for _ in range(REQUESTS_PER_BATCH):
-        latency_ms = measure_request()
+        latency_ms, cache_status = measure_request()
         latencies.append(latency_ms)
 
-    hits, misses = get_cache_stats()
+        if cache_status == "HIT":
+            hits += 1
+        elif cache_status == "MISS":
+            misses += 1
 
     return latencies, hits, misses
+
 
 def percentile(values, percent):
     ordered_values = sorted(values)
@@ -260,6 +239,8 @@ def main():
             f"{result['misses']:>10}"
             f"{result['hit_rate']:>11.2f}%"
         )
+    run_controlled_comparison()
+
 
 def run_controlled_comparison():
     samples = 30
@@ -267,21 +248,22 @@ def run_controlled_comparison():
     print("\n=== C.3 Supplemental Hit-vs-Miss Test ===")
     print(f"Samples per condition: {samples}")
 
-    # Controlled cache hits
     delete_cache_key()
-    measure_request()  # populate cache
+    measure_request()
 
     hit_latencies = []
 
     for _ in range(samples):
-        hit_latencies.append(measure_request())
+        latency_ms, _ = measure_request()
+        hit_latencies.append(latency_ms)
 
     # Controlled cache misses
     miss_latencies = []
 
     for _ in range(samples):
         delete_cache_key()
-        miss_latencies.append(measure_request())
+        latency_ms, _ = measure_request()
+        miss_latencies.append(latency_ms)
 
     hit_median = statistics.median(hit_latencies)
     miss_median = statistics.median(miss_latencies)
@@ -314,6 +296,8 @@ def run_controlled_comparison():
         f"Incremental miss-path fraction: "
         f"{incremental_fraction:.2f}%"
     )
+
+
 
 if __name__ == "__main__":
     main()

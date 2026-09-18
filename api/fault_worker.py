@@ -57,10 +57,19 @@ async def run_fault_worker():
             messages = await client.xreadgroup(
                 GROUP, CONSUMER, {STREAM: "0"}, count=10
             )
-            if not messages:
-                messages = await client.xreadgroup(
-                    GROUP, CONSUMER, {STREAM: ">"}, count=10, block=1000
-                )
+
+            has_entries = any(entries for _, entries in messages)
+
+            if not has_entries:
+               messages = await client.xreadgroup(
+                   GROUP,
+                   CONSUMER,
+                   {STREAM: ">"},
+                   count=10,
+                   block=1000,
+               )
+
+
             for _, entries in messages:
                 for event_id, fields in entries:
                     payload = json.loads(fields["payload"])
