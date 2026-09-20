@@ -86,14 +86,14 @@ docker compose ps -a
 
 Το REST API είναι διαθέσιμο στο:
 
-```text
-http://localhost:8000
+```bash
+curl http://localhost:8000
 ```
 
 Το Swagger UI είναι διαθέσιμο στο:
 
-```text
-http://localhost:8000/docs
+```bash
+curl http://localhost:8000/docs
 ```
 
 Έλεγχος λειτουργίας του API:
@@ -145,8 +145,13 @@ curl -sS -w '\nHTTP %{http_code}\n' \
 - 40 MongoDB equipment records σε 4 διαφορετικά equipment types
 - 100 PostgreSQL consumer accounts με sample invoices
 
-Αν υπάρχουν ήδη sensor readings, το αυτόματο bootstrap seed παραλείπει την επανεισαγωγή τους ώστε να διατηρηθούν τα υπάρχοντα δεδομένα.
-
+Για εκκίνηση του συστήματος:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+python -m pip install -r scripts/requirements.txt
+```
+ 
 Για προαιρετική χειροκίνητη εκτέλεση του seed:
 
 ```bash
