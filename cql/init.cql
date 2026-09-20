@@ -50,3 +50,11 @@ CREATE TABLE IF NOT EXISTS regional_readings (
     metric_type ASC
 )
 AND default_time_to_live = 7776000;
+
+-- Stable identity and completion state of the synthetic sensor dataset.
+-- No TTL: completed seed data expires naturally without being recreated.
+CREATE TABLE IF NOT EXISTS seed_state (
+    name text PRIMARY KEY,
+    start_time timestamp,
+    completed boolean
+);

@@ -14,19 +14,9 @@ services:
       context: .
       dockerfile: api/Dockerfile
 
-    entrypoint: ["/bin/sh", "-ec", ". /config/runtime.sh; exec python /app/scripts/seed.py"]
+    entrypoint: ["/bin/sh", "-ec", ". /config/runtime.sh; . /config/seed-connections.sh; exec python /app/scripts/seed.py"]
     volumes:
       - runtime_config:/config:ro
-    environment:
-      BOOTSTRAP_ONLY: "1"
-      SCRIPT_MONGO_URI: mongodb://catalog-db:27017/gridsense
-      SCRIPT_CASSANDRA_HOST: timeseries-db
-      SCRIPT_CASSANDRA_PORT: "9042"
-      SCRIPT_REDIS_HOST: cache
-      SCRIPT_REDIS_PORT: "6379"
-      SCRIPT_NEO4J_URI: bolt://graph-db:7687
-      SCRIPT_POSTGRES_HOST: billing-db
-      SCRIPT_POSTGRES_PORT: "5432"
     networks:
       - gridsense_net
     depends_on:
@@ -45,7 +35,7 @@ services:
     restart: "no"
 
   api:
-    entrypoint: ["/bin/sh", "-ec", ". /config/runtime.sh; exec uvicorn api.main:app --host 0.0.0.0 --port 8000"]
+    entrypoint: ["/bin/sh", "-ec", ". /config/runtime.sh; . /config/connections.sh; exec uvicorn api.main:app --host 0.0.0.0 --port 8000"]
     volumes:
       - runtime_config:/config:ro
     build:
@@ -53,16 +43,6 @@ services:
       dockerfile: api/Dockerfile
     ports:
       - "8000:8000"
-    environment:
-      NEO4J_URI: bolt://graph-db:7687
-      POSTGRES_HOST: billing-db
-      POSTGRES_PORT: "5432"
-      MONGO_URI: mongodb://catalog-db:27017
-      MONGO_DB: gridsense
-      CASSANDRA_HOST: timeseries-db
-      CASSANDRA_PORT: "9042"
-      REDIS_HOST: cache
-      REDIS_PORT: "6379"
     networks:
       - gridsense_net
     depends_on:
@@ -106,13 +86,17 @@ services:
   cassandra-init:
     image: cassandra:4.1
     depends_on:
+      config-init:
+        condition: service_completed_successfully
       timeseries-db:
         condition: service_healthy
     volumes:
       - ./cql/init.cql:/init.cql:ro
+      - runtime_config:/config:ro
     networks:
       - gridsense_net
-    command: ["cqlsh", "timeseries-db", "9042", "-f", "/init.cql"]
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ['. /config/connections.sh; exec cqlsh "$${CASSANDRA_HOST}" "$${CASSANDRA_PORT}" -f /init.cql']
     restart: "no"
 
   graph-db:

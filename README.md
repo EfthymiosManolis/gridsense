@@ -40,8 +40,11 @@
 - `POSTGRES_USER`
 - `POSTGRES_PASSWORD`
 - `POSTGRES_DB`
+- `MONGO_URI`, `MONGO_DB`, `NEO4J_URI`
+- `CASSANDRA_HOST`, `CASSANDRA_PORT`, `POSTGRES_HOST`, `POSTGRES_PORT`
+- `REDIS_HOST`, `REDIS_PORT`
 
-Το ίδιο `.env` χρησιμοποιείται από το Docker Compose και από τα host-side utility και benchmark scripts.
+Το ίδιο `.env` χρησιμοποιείται για τα credentials και τις ρυθμίσεις σύνδεσης. Το `config-init` φορτώνει τις εσωτερικές διευθύνσεις των Docker services για το API, το seed και την αρχικοποίηση Cassandra. Οι μεταβλητές `SCRIPT_*` του `.env` χρησιμοποιούνται από τα utility και benchmark scripts όταν εκτελούνται στον host. Η εκκίνηση παραμένει `docker compose up --build`, χωρίς χειροκίνητη δημιουργία `.env`.
 
 ## Εκκίνηση
 
@@ -151,9 +154,11 @@ python -m pip install -r scripts/requirements.txt
 python scripts/seed.py
 ```
 
-Η χειροκίνητη εκτέλεση επαναδημιουργεί τα συνθετικά Cassandra sensor και regional readings. Δεν πρέπει να χρησιμοποιείται πάνω σε πραγματικά δεδομένα που πρέπει να διατηρηθούν.
+Το seed επανεκτελείται χωρίς διαγραφή υπαρχόντων δεδομένων. Κάθε βάση αρχικοποιείται ανεξάρτητα, ώστε η παρουσία readings στην Cassandra να μην παρακάμπτει μια ημιτελή αρχικοποίηση των υπόλοιπων βάσεων. Διατηρούνται υπάρχοντα equipment profiles, graph properties, καταστάσεις διακοπτών και billing balances.
 
-Το seed script είναι idempotent ως προς τα seed records και η επανεκτέλεσή του δεν δημιουργεί duplicate logical records.
+Η Cassandra διατηρεί σταθερά timestamps και κατάσταση ολοκλήρωσης στον πίνακα `seed_state`. Μια διακοπείσα φόρτωση συνεχίζεται με εισαγωγή μόνο των εγγραφών που λείπουν. Η επανεκτέλεση της ίδιας έκδοσης seed δεν δημιουργεί επιπλέον seed records.
+
+Σε αναβάθμιση παλαιότερης εγκατάστασης χωρίς `seed_state`, δημιουργείται μία νέα σειρά συνθετικών readings, διατηρώντας τις παλιές. Τα readings εξακολουθούν να λήγουν με TTL 90 ημερών· ολοκληρωμένο seed δεν τα αναδημιουργεί μετά τη λήξη τους. Το MongoDB seed απαιτεί μοναδικά `asset_id`: αν υπάρχουν ήδη διπλότυπα, σταματά με σφάλμα αντί να διαγράψει δεδομένα.
 
 Ένα υπάρχον Cassandra volume διατηρεί το προηγούμενο schema. Το `CREATE TABLE IF NOT EXISTS` δεν μεταβάλλει αυτόματα τη δομή ενός ήδη υπάρχοντος πίνακα.
 

@@ -99,11 +99,14 @@ def seed_mongo():
                 },
             })
 
-    collection.delete_many({})
-
-    collection.insert_many(equipment_records)
-
-    client.close()
+    try:
+        # The unique index also makes concurrent seed runs safe.
+        collection.create_index("asset_id", unique=True)
+        for record in equipment_records:
+            collection.update_one({"asset_id": record["asset_id"]},
+                                  {"$setOnInsert": record}, upsert=True)
+    finally:
+        client.close()
 
     print(
         f"MongoDB seed completed: "
@@ -115,13 +118,40 @@ CASSANDRA_PORT = int(require_env("SCRIPT_CASSANDRA_PORT"))
 
 def seed_cassandra():
     cluster = Cluster([CASSANDRA_HOST], port=CASSANDRA_PORT)
-    session = cluster.connect("gridsense")
+    try:
+        session = cluster.connect("gridsense")
+        # Kept here as well as init.cql so the standalone seed upgrades old schemas.
+        session.execute("""CREATE TABLE IF NOT EXISTS seed_state (
+            name text PRIMARY KEY, start_time timestamp, completed boolean)""")
+        session.execute(
+            "INSERT INTO seed_state (name, start_time, completed) VALUES (%s, %s, %s) IF NOT EXISTS",
+            ("sensor_readings_v1", datetime.now(timezone.utc) - timedelta(minutes=2499), False),
+        )
+        state = session.execute(
+            "SELECT start_time, completed FROM seed_state WHERE name=%s",
+            ("sensor_readings_v1",),
+        ).one()
+        if not state.completed:
+            _seed_cassandra_rows(session, state)
+            # Mark complete only after BOTH projections have finished.
+            session.execute("UPDATE seed_state SET completed=true WHERE name=%s",
+                            ("sensor_readings_v1",))
+    finally:
+        cluster.shutdown()
+    # Always retry region registration, including after an interrupted Redis write.
+    redis_client = Redis(
+        host=require_env("SCRIPT_REDIS_HOST"),
+        port=int(require_env("SCRIPT_REDIS_PORT")),
+        decode_responses=True,
+    )
+    try:
+        redis_client.sadd("sensor_regions", "REGION01", "REGION02", "REGION03", "REGION04")
+    finally:
+        redis_client.close()
+    print("Cassandra seed completed; existing readings preserved.")
 
-    # Clear synthetic seed data so the script can be run again
-    # without creating duplicate seed records.
-    session.execute("TRUNCATE sensor_readings")
-    session.execute("TRUNCATE regional_readings")
 
+def _seed_cassandra_rows(session, state):
     sensor_query = """
     INSERT INTO sensor_readings
     (
@@ -134,7 +164,7 @@ def seed_cassandra():
         unit,
         quality_flag
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
     """
 
     regional_query = """
@@ -150,14 +180,14 @@ def seed_cassandra():
         unit,
         quality_flag
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
     """
 
     sensor_prepared = session.prepare(sensor_query)
     regional_prepared = session.prepare(regional_query)
 
     # 20 sensors * 2500 readings = 50,000 readings
-    start_time = datetime.now(timezone.utc) - timedelta(minutes=2499)
+    start_time = state.start_time.replace(tzinfo=timezone.utc)
 
     metric_types = [
         ("voltage", "V"),
@@ -231,19 +261,6 @@ def seed_cassandra():
 
             total_readings += 1
 
-    cluster.shutdown()
-    redis_client = Redis(
-        host=require_env("SCRIPT_REDIS_HOST"),
-        port=int(require_env("SCRIPT_REDIS_PORT")),
-        decode_responses=True,
-    )
-    redis_client.sadd("sensor_regions", "REGION01", "REGION02", "REGION03", "REGION04")
-    redis_client.close()
-
-    print(
-        f"Cassandra seed completed: "
-        f"{total_readings:,} sensor readings inserted."
-    )
 
 NEO4J_URI = require_env("SCRIPT_NEO4J_URI")
 NEO4J_USER = require_env("NEO4J_USER")
@@ -284,7 +301,7 @@ def seed_neo4j():
     )
 
 def seed_restore_ties():
-    """Add only demo backup ties, without rerunning destructive data seeding."""
+    """Add missing demo backup ties, preserving existing switch states."""
     path = Path(__file__).resolve().parents[1] / 'neo4j/import/restore_ties.cypher'
     with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD)) as driver:
         with driver.session(database="neo4j") as session:
@@ -364,23 +381,9 @@ async def seed_postgres():
     print("PostgreSQL seed completed: 100 consumer accounts with sample invoices.")
 
 
-def sensor_data_exists() -> bool:
-    cluster = Cluster([CASSANDRA_HOST], port=CASSANDRA_PORT)
-    try:
-        session = cluster.connect("gridsense")
-        return session.execute(
-            "SELECT sensor_id FROM sensor_readings LIMIT 1"
-        ).one() is not None
-    finally:
-        cluster.shutdown()
-
-
 if __name__ == "__main__":
-    if os.getenv("BOOTSTRAP_ONLY") == "1" and sensor_data_exists():
-        seed_restore_ties()
-        print("Existing sensor data found; automatic seed skipped.")
-        raise SystemExit(0)
-
+    # Each store resumes independently; one existing reading proves nothing
+    # about completion of MongoDB, Neo4j or PostgreSQL initialization.
     seed_cassandra()
     seed_mongo()
     seed_neo4j()

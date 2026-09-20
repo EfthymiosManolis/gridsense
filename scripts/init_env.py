@@ -10,6 +10,9 @@ from dotenv import dotenv_values
 
 KEYS = ('NEO4J_USER', 'NEO4J_PASSWORD', 'POSTGRES_USER',
         'POSTGRES_PASSWORD', 'POSTGRES_DB')
+CONNECTION_KEYS = ('MONGO_URI', 'MONGO_DB', 'NEO4J_URI', 'CASSANDRA_HOST',
+                   'CASSANDRA_PORT', 'POSTGRES_HOST', 'POSTGRES_PORT',
+                   'REDIS_HOST', 'REDIS_PORT')
 
 
 def initialize(workspace: Path, config: Path):
@@ -35,6 +38,9 @@ def initialize(workspace: Path, config: Path):
             owner = workspace.stat()
             os.chown(env_path, owner.st_uid, owner.st_gid)
     values = dotenv_values(env_path, interpolate=False)
+    connections = {key: values.get(key) for key in CONNECTION_KEYS}
+    if any(not value or '\n' in value or '\r' in value for value in connections.values()):
+        raise RuntimeError('The .env file needs non-empty, single-line connection values for: ' + ', '.join(CONNECTION_KEYS))
     credentials = {key: values.get(key) for key in KEYS}
     if any(not value or '\n' in value or '\r' in value for value in credentials.values()):
         raise RuntimeError('The .env file needs non-empty, single-line values for: ' + ', '.join(KEYS))
@@ -51,6 +57,19 @@ def initialize(workspace: Path, config: Path):
     shell_path.write_text('\n'.join(f'export {key}={shlex.quote(value)}'
                                     for key, value in credentials.items()) + '\n')
     shell_path.chmod(0o600)
+    # Keep connection settings separate: Neo4j interprets NEO4J_* variables
+    # as server configuration, so its entrypoint must load credentials only.
+    connection_path = config / 'connections.sh'
+    connection_path.write_text('\n'.join(f'export {key}={shlex.quote(value)}'
+                                         for key, value in connections.items()) + '\n')
+    connection_path.chmod(0o600)
+    seed_connections = {'SCRIPT_' + key: connections[key] for key in
+                        ('MONGO_URI', 'NEO4J_URI', 'CASSANDRA_HOST', 'CASSANDRA_PORT',
+                         'POSTGRES_HOST', 'POSTGRES_PORT', 'REDIS_HOST', 'REDIS_PORT')}
+    seed_path = config / 'seed-connections.sh'
+    seed_path.write_text('\n'.join(f'export {key}={shlex.quote(value)}'
+                                   for key, value in seed_connections.items()) + '\n')
+    seed_path.chmod(0o600)
     print('Runtime configuration ready; existing .env credentials preserved.')
 
 
