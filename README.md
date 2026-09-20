@@ -29,11 +29,7 @@
 
 Το GridSense χρησιμοποιεί αρχείο `.env` για τα credentials και τις ρυθμίσεις σύνδεσης των υπηρεσιών.
 
-Δημιούργησε το τοπικό `.env` από το template:
-
-```bash
-cp .env.example .env
-```
+Το `.env` δημιουργείται αυτόματα από το `config-init` service κατά την εκκίνηση του συστήματος, χρησιμοποιώντας το `.env.example` ως template. Δεν απαιτείται χειροκίνητη εκτέλεση του `cp .env.example .env`.
 
 Το `.env` αγνοείται από το Git και δεν πρέπει να γίνεται commit.
 
@@ -56,12 +52,6 @@ git clone https://github.com/EfthymiosManolis/gridsense.git
 cd gridsense
 ```
 
-Δημιούργησε το `.env`:
-
-```bash
-cp .env.example .env
-```
-
 Εκκίνησε ολόκληρο το σύστημα:
 
 ```bash
@@ -74,7 +64,7 @@ docker compose up --build
 docker compose up --build -d
 ```
 
-Το Docker Compose περιμένει να γίνουν healthy οι βάσεις, δημιουργεί το Cassandra schema, εκτελεί αυτόματα το seed και στη συνέχεια ξεκινά το API.
+Το Docker Compose αρχικοποιεί αυτόματα το configuration μέσω του `config-init`, περιμένει να γίνουν healthy οι βάσεις, δημιουργεί το Cassandra schema, εκτελεί αυτόματα το seed και στη συνέχεια ξεκινά το API.
 
 Έλεγχος της κατάστασης όλων των containers:
 
@@ -122,6 +112,7 @@ curl -sS -w '\nHTTP %{http_code}\n' \
 
 | Service | Purpose |
 | --- | --- |
+| `config-init` | Δημιουργεί αυτόματα το τοπικό `.env` από το `.env.example`, χωρίς να απαιτείται χειροκίνητο `cp` |
 | `cassandra-init` | Εκτελεί το `cql/init.cql` μετά την εκκίνηση της Cassandra |
 | `seed` | Εισάγει αυτόματα τα αρχικά δοκιμαστικά δεδομένα πριν ξεκινήσει το API |
 
@@ -131,10 +122,11 @@ curl -sS -w '\nHTTP %{http_code}\n' \
 
 Σε καθαρή εγκατάσταση:
 
-1. Το `cassandra-init` δημιουργεί το Cassandra keyspace και τους πίνακες.
-2. Το PostgreSQL εκτελεί το `postgres/init.sql`.
-3. Η υπηρεσία `seed` εισάγει τα αρχικά δεδομένα.
-4. Το API ξεκινά μόνο αφού ολοκληρωθεί επιτυχώς το seed.
+1. Το `config-init` δημιουργεί το τοπικό `.env` από το `.env.example`.
+2. Το `cassandra-init` δημιουργεί το Cassandra keyspace και τους πίνακες.
+3. Το PostgreSQL εκτελεί το `postgres/init.sql`.
+4. Η υπηρεσία `seed` εισάγει τα αρχικά δεδομένα.
+5. Το API ξεκινά μόνο αφού ολοκληρωθεί επιτυχώς το seed.
 
 Το dataset περιλαμβάνει:
 
@@ -145,7 +137,8 @@ curl -sS -w '\nHTTP %{http_code}\n' \
 - 40 MongoDB equipment records σε 4 διαφορετικά equipment types
 - 100 PostgreSQL consumer accounts με sample invoices
 
-Για εκκίνηση του συστήματος:
+Για προαιρετική εκτέλεση των host-side scripts και benchmarks:
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate
@@ -347,7 +340,7 @@ curl -sS -w '\nHTTP %{http_code}\n' \
   "$BASE_URL/grid/restore-paths/MTR1"
 ```
 
-Αναμένεται `HTTP 200` και διαδρομή που περιλαμβάνει το `MTR1`.
+Αναμένεται `HTTP 200` και διαδρομή που περιλαμβάνει το `MTR1`. Τα restore paths αποτελούν προτεινόμενες εναλλακτικές διαδρομές αποκατάστασης και δεν εφαρμόζονται αυτόματα. Η τελική επιλογή απαιτεί validation από operator πριν χρησιμοποιηθεί σε πραγματική διαδικασία αποκατάστασης.
 
 ### 6. Δημιουργία Neo4j node
 
@@ -472,12 +465,17 @@ curl -sS -w '\nHTTP %{http_code}\n' \
   -d "{
     \"premise_id\": \"PREM001\",
     \"amount\": 12.34,
+    \"billing_period\": \"2026-09-01\",
     \"due_date\": \"$B7_DUE_DATE\",
     \"description\": \"$B7_INVOICE\"
   }"
 ```
 
 Αναμένεται `HTTP 200`.
+
+Το `billing_period` δηλώνει τον μήνα χρέωσης και πρέπει να είναι η πρώτη ημέρα του αντίστοιχου μήνα, π.χ. `2026-09-01` για τον Σεπτέμβριο 2026.
+
+Η δημιουργία invoice είναι idempotent για κάθε συνδυασμό `premise_id` και `billing_period`. Η επανάληψη του ίδιου request δεν δημιουργεί duplicate invoice και επιστρέφει το ήδη υπάρχον invoice με `created: false`. Αν σταλεί διαφορετικό invoice για το ίδιο `premise_id` και `billing_period`, το API επιστρέφει `HTTP 409`.
 
 Ανάκτησε ξανά τον λογαριασμό:
 
@@ -674,16 +672,21 @@ gridsense/
 │   │   ├── billing.py
 │   │   └── alerts.py
 │   ├── models/
+│   │   └── postgres.py
 │   ├── db/
+│   │   ├── postgres.py
+│   │   └── billing_schema.sql
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── cql/
 │   └── init.cql
 ├── neo4j/
 │   └── import/
+│       └── restore_ties.cypher
 ├── postgres/
 │   └── init.sql
 ├── scripts/
+│   ├── init_env.py
 │   ├── seed.py
 │   ├── benchmark_cassandra.py
 │   ├── benchmark_neo4j.py
@@ -691,6 +694,10 @@ gridsense/
 │   ├── seed_c4.py
 │   ├── benchmark_c4.py
 │   └── requirements.txt
+├── tests/
+│   ├── test_billing.py
+│   └── test_restore_paths.py
+├── .dockerignore
 ├── .env.example
 ├── .gitignore
 ├── docker-compose.yml

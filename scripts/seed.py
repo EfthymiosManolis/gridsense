@@ -1,6 +1,7 @@
 from pymongo import MongoClient
 from cassandra.cluster import Cluster
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 import asyncio
 import asyncpg
 from neo4j import GraphDatabase
@@ -282,6 +283,14 @@ def seed_neo4j():
         f"{len(statements)} Cypher statements executed."
     )
 
+def seed_restore_ties():
+    """Add only demo backup ties, without rerunning destructive data seeding."""
+    path = Path(__file__).resolve().parents[1] / 'neo4j/import/restore_ties.cypher'
+    with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD)) as driver:
+        with driver.session(database="neo4j") as session:
+            session.run(path.read_text()).consume()
+
+
 POSTGRES_HOST = require_env("SCRIPT_POSTGRES_HOST")
 POSTGRES_PORT = int(require_env("SCRIPT_POSTGRES_PORT"))
 POSTGRES_USER = require_env("POSTGRES_USER")
@@ -299,6 +308,9 @@ async def seed_postgres():
 
     try:
         async with connection.transaction():
+            await connection.execute("SELECT pg_advisory_xact_lock(714032601)")
+            schema = Path(__file__).resolve().parents[1] / 'api/db/billing_schema.sql'
+            await connection.execute(schema.read_text())
             for i in range(1, 101):
                 premise_id = f"PREM{i:03d}"
 
@@ -314,54 +326,36 @@ async def seed_postgres():
                         )
                     VALUES ($1, $2, $3, $4, $5)
                     ON CONFLICT (premise_id)
-                    DO UPDATE SET
-                        customer_name = EXCLUDED.customer_name,
-                        address = EXCLUDED.address,
-                        account_status = EXCLUDED.account_status,
-                        balance = EXCLUDED.balance
+                    DO NOTHING
                     """,
                     premise_id,
                     f"Customer {i}",
                     f"Sample Address {i}",
                     "active",
-                    float((i * 7) % 150),
+                    Decimal('0.00'),
                 )
 
-                description = "Sample monthly electricity invoice"
-                due_date = datetime(2026, 10, 31, tzinfo=timezone.utc)
-                amount = float(40 + (i % 60))
-
-                exists = await connection.fetchval(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1
-                        FROM invoices
-                        WHERE premise_id = $1
-                          AND due_date = $2
-                          AND description = $3
-                    )
-                    """,
+                # Do not guess the periods or balances of historical invoices.
+                if await connection.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM invoices WHERE premise_id=$1 AND billing_period IS NULL)",
                     premise_id,
-                    due_date,
-                    description,
+                ):
+                    continue
+                amount = Decimal(40 + (i % 60))
+                invoice_id = await connection.fetchval(
+                    """INSERT INTO invoices
+                           (premise_id, amount, billing_period, due_date, description)
+                       VALUES ($1, $2, $3, $4, $5)
+                       ON CONFLICT (premise_id, billing_period) DO NOTHING
+                       RETURNING invoice_id""",
+                    premise_id, amount, date(2026, 10, 1),
+                    datetime(2026, 10, 31, tzinfo=timezone.utc),
+                    "Sample monthly electricity invoice",
                 )
-
-                if not exists:
+                if invoice_id is not None:
                     await connection.execute(
-                        """
-                        INSERT INTO invoices
-                            (
-                                premise_id,
-                                amount,
-                                due_date,
-                                description
-                            )
-                        VALUES ($1, $2, $3, $4)
-                        """,
-                        premise_id,
-                        amount,
-                        due_date,
-                        description,
+                        "UPDATE consumer_accounts SET balance=balance+$2 WHERE premise_id=$1",
+                        premise_id, amount,
                     )
 
     finally:
@@ -383,10 +377,12 @@ def sensor_data_exists() -> bool:
 
 if __name__ == "__main__":
     if os.getenv("BOOTSTRAP_ONLY") == "1" and sensor_data_exists():
+        seed_restore_ties()
         print("Existing sensor data found; automatic seed skipped.")
         raise SystemExit(0)
 
     seed_cassandra()
     seed_mongo()
     seed_neo4j()
+    seed_restore_ties()
     asyncio.run(seed_postgres())

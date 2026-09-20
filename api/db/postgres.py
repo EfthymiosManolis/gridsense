@@ -1,8 +1,16 @@
 import os
 import asyncpg
+from pathlib import Path
 
 
 pool: asyncpg.Pool | None = None
+
+
+async def apply_billing_schema(connection):
+    async with connection.transaction():
+        # Concurrent API starts must not race while creating constraints.
+        await connection.execute("SELECT pg_advisory_xact_lock(714032601)")
+        await connection.execute(Path(__file__).with_name('billing_schema.sql').read_text())
 
 
 async def init_postgres_pool():
@@ -18,6 +26,14 @@ async def init_postgres_pool():
              min_size=1,
              max_size=10,
         )
+
+        try:
+            async with pool.acquire() as connection:
+                await apply_billing_schema(connection)
+        except Exception:
+            await pool.close()
+            pool = None
+            raise
 
     return pool
 

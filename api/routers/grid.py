@@ -35,6 +35,8 @@ async def fault_impact(
 
     MATCH path = (origin)-[:FEEDS|SUPPLIES|CONNECTS_TO*1..10]->(downstream)
     WHERE length(path) <= $max_depth
+      AND all(r IN relationships(path) WHERE NOT coalesce(r.is_open, false)
+              AND coalesce(r.available, true))
 
     WITH downstream, min(length(path)) AS depth
 
@@ -111,41 +113,55 @@ async def fault_impact(
 
 @router.get("/restore-paths/{node_id}")
 async def restore_paths(node_id: str):
+    """Propose healthy topology paths that need a normally open tie closed.
+
+    These are candidates for operator review, not electrical feasibility checks
+    or commands to operate switches. A physically faulted target is excluded.
+    """
     driver = await get_neo4j_driver()
-
-    query = """
-        MATCH (target)
-	WHERE target.substation_id = $node_id
-   	    OR target.asset_id = $node_id
-   	    OR target.meter_id = $node_id
-   	    OR target.node_id = $node_id
-   	    OR target.gsp_id = $node_id
-
-	MATCH path = (source:GridSupplyPoint)
-            -[:FEEDS|SUPPLIES|CONNECTS_TO*1..10]->(target)
-
-	RETURN DISTINCT [node IN nodes(path) |
-             coalesce(
-       		 node.gsp_id,
-        	 node.substation_id,
-        	 node.asset_id,
-        	 node.meter_id,
-        	 node.node_id
-    	     )
-	] AS restore_path
-	LIMIT 50
-	"""
     async with driver.session(database="neo4j") as session:
-        result = await session.run(query, node_id=node_id)
-
-        paths = []
-
-        async for record in result:
-            paths.append(record["restore_path"])
-
+        result = await session.run(
+            """MATCH (n)
+               WHERE n.node_id=$node_id OR n.gsp_id=$node_id
+                  OR n.substation_id=$node_id OR n.asset_id=$node_id
+                  OR n.meter_id=$node_id
+               RETURN elementId(n) AS id LIMIT 2""", node_id=node_id)
+        targets = await result.data()
+        if not targets:
+            raise HTTPException(status_code=404, detail="Topology node not found")
+        if len(targets) > 1:
+            raise HTTPException(status_code=409, detail="Ambiguous topology node ID")
+        result = await session.run(
+            """MATCH path = (source:GridSupplyPoint)
+                     -[:FEEDS|SUPPLIES|CONNECTS_TO*1..10]->(target)
+               WHERE elementId(target) = $target_id
+                 AND all(n IN nodes(path) WHERE coalesce(n.available, true)
+                         AND NOT coalesce(n.fault_alert_active, false))
+                 AND all(r IN relationships(path) WHERE coalesce(r.available, true)
+                         AND NOT coalesce(r.fault_alert_active, false)
+                         AND (NOT coalesce(r.is_open, false) OR coalesce(r.switchable, false)))
+                 AND any(r IN relationships(path) WHERE coalesce(r.is_open, false))
+                 AND all(n IN nodes(path) WHERE single(m IN nodes(path) WHERE m = n))
+               WITH path,
+                    [n IN nodes(path) | coalesce(n.node_id, n.gsp_id,
+                       n.substation_id, n.asset_id, n.meter_id)] AS ids
+               WHERE all(id IN ids WHERE id IS NOT NULL)
+               RETURN ids AS restore_path,
+                      [r IN relationships(path) WHERE coalesce(r.is_open, false) |
+                        {from_node: coalesce(startNode(r).node_id, startNode(r).gsp_id,
+                            startNode(r).substation_id, startNode(r).asset_id, startNode(r).meter_id),
+                         to_node: coalesce(endNode(r).node_id, endNode(r).gsp_id,
+                            endNode(r).substation_id, endNode(r).asset_id, endNode(r).meter_id),
+                         relationship_id: elementId(r), action: 'close'}] AS required_switches
+               ORDER BY length(path), ids LIMIT 50""",
+            target_id=targets[0]['id'],
+        )
+        candidates = await result.data()
     return {
         "node_id": node_id,
-        "restore_paths": paths
+        "restore_paths": [item['restore_path'] for item in candidates],
+        "candidates": candidates,
+        "requires_operator_validation": True,
     }
 
 
